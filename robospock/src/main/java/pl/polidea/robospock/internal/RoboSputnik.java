@@ -5,31 +5,34 @@ import org.junit.runner.Runner;
 import org.junit.runner.manipulation.*;
 import org.junit.runner.notification.RunNotifier;
 import org.junit.runners.model.InitializationError;
-import org.robolectric.*;
 import org.robolectric.annotation.Config;
-import org.robolectric.bytecode.AsmInstrumentingClassLoader;
-import org.robolectric.bytecode.Setup;
-import org.robolectric.bytecode.ShadowMap;
-import org.robolectric.res.DocumentLoader;
+import org.robolectric.internal.EnvHolder;
+import org.robolectric.internal.SdkConfig;
+import org.robolectric.internal.SdkEnvironment;
+import org.robolectric.internal.bytecode.InstrumentingClassLoader;
+import org.robolectric.internal.bytecode.InstrumentingClassLoaderConfig;
+import org.robolectric.internal.dependency.CachedDependencyResolver;
+import org.robolectric.internal.dependency.DependencyResolver;
+import org.robolectric.internal.dependency.LocalDependencyResolver;
+import org.robolectric.internal.dependency.MavenDependencyResolver;
+import org.robolectric.manifest.AndroidManifest;
 import org.robolectric.res.Fs;
 import org.robolectric.res.FsFile;
 import org.robolectric.res.ResourceLoader;
-import org.robolectric.util.AnnotationUtil;
 import org.spockframework.runtime.Sputnik;
 import org.spockframework.runtime.model.SpecInfo;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
+import java.lang.annotation.Annotation;
+import java.lang.reflect.*;
 import java.net.URL;
 import java.security.SecureRandom;
 import java.util.*;
 
 public class RoboSputnik extends Runner implements Filterable, Sortable {
 
-    private static final MavenCentral MAVEN_CENTRAL = new MavenCentral();
 
     private static final Map<Class<? extends RoboSputnik>, EnvHolder> envHoldersByTestRunner =
             new HashMap<Class<? extends RoboSputnik>, EnvHolder>();
@@ -47,6 +50,8 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
     static {
         new SecureRandom(); // this starts up the Poller SunPKCS11-Darwin thread early, outside of any Robolectric classloader
     }
+
+    private DependencyResolver dependencyResolver;
 
     public RoboSputnik(Class<?> clazz) throws InitializationError {
 
@@ -66,12 +71,9 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
         final Config config = getConfig(clazz);
         AndroidManifest appManifest = getAppManifest(config);
         SdkEnvironment sdkEnvironment = getEnvironment(appManifest, config);
-
-        // todo: is this really needed?
         Thread.currentThread().setContextClassLoader(sdkEnvironment.getRobolectricClassLoader());
 
         Class bootstrappedTestClass = sdkEnvironment.bootstrappedClass(clazz);
-
         // Since we have bootstrappedClass we may properly initialize
 
         try {
@@ -87,8 +89,8 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
 
         // let's manually add our initializers
 
-        for(Method method : sputnik.getClass().getDeclaredMethods()) {
-            if(method.getName() == "getSpec") {
+        for (Method method : sputnik.getClass().getDeclaredMethods()) {
+            if (method.getName() == "getSpec") {
                 method.setAccessible(true);
                 try {
                     Object spec = method.invoke(sputnik);
@@ -117,7 +119,7 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
     }
 
     public Config getConfig(Class<?> clazz) {
-        Config config = AnnotationUtil.defaultsFor(Config.class);
+        Config config = defaultsFor(Config.class);
 
         Config globalConfig = Config.Implementation.fromProperties(getConfigProperties());
         if (globalConfig != null) {
@@ -130,6 +132,17 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
         }
 
         return config;
+    }
+
+    private static <A extends Annotation> A defaultsFor(Class<A> annotation) {
+        //noinspection unchecked
+        return (A) Proxy.newProxyInstance(annotation.getClassLoader(),
+                new Class[]{annotation}, new InvocationHandler() {
+                    public Object invoke(Object proxy, Method method, Object[] args)
+                            throws Throwable {
+                        return method.getDefaultValue();
+                    }
+                });
     }
 
     protected Properties getConfigProperties() {
@@ -150,44 +163,74 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
             return null;
         }
 
-        boolean propertyAvailable = false;
-        FsFile manifestFile = null;
         String manifestProperty = System.getProperty("android.manifest");
-        if (config.manifest().equals(Config.DEFAULT) && manifestProperty != null) {
+        String resourcesProperty = System.getProperty("android.resources");
+        String assetsProperty = System.getProperty("android.assets");
+
+        FsFile baseDir;
+        FsFile manifestFile;
+        FsFile resDir;
+        FsFile assetDir;
+
+        boolean defaultManifest = config.manifest().equals(Config.DEFAULT);
+        if (defaultManifest && manifestProperty != null) {
             manifestFile = Fs.fileFromPath(manifestProperty);
-            propertyAvailable = true;
+            baseDir = manifestFile.getParent();
         } else {
-            FsFile fsFile = Fs.currentDirectory();
-            String manifestStr = config.manifest().equals(Config.DEFAULT) ? "AndroidManifest.xml" : config.manifest();
-            manifestFile = fsFile.join(manifestStr);
+            manifestFile = getBaseDir().join(defaultManifest ? AndroidManifest.DEFAULT_MANIFEST_NAME : config.manifest());
+            baseDir = manifestFile.getParent();
+        }
+
+        boolean defaultRes = Config.DEFAULT_RES_FOLDER.equals(config.resourceDir());
+        if (defaultRes && resourcesProperty != null) {
+            resDir = Fs.fileFromPath(resourcesProperty);
+        } else {
+            resDir = baseDir.join(config.resourceDir());
+        }
+
+        boolean defaultAssets = Config.DEFAULT_ASSET_FOLDER.equals(config.assetDir());
+        if (defaultAssets && assetsProperty != null) {
+            assetDir = Fs.fileFromPath(assetsProperty);
+        } else {
+            assetDir = baseDir.join(config.assetDir());
+        }
+
+        List<FsFile> libraryDirs = null;
+        if (config.libraries().length > 0) {
+            libraryDirs = new ArrayList<FsFile>();
+            for (String libraryDirName : config.libraries()) {
+                libraryDirs.add(baseDir.join(libraryDirName));
+            }
         }
 
         synchronized (envHolder) {
             AndroidManifest appManifest;
             appManifest = envHolder.appManifestsByFile.get(manifestFile);
             if (appManifest == null) {
-
-                long startTime = System.currentTimeMillis();
-                appManifest = propertyAvailable ? createAppManifestFromProperty(manifestFile) : createAppManifest(manifestFile);
-                if (DocumentLoader.DEBUG_PERF)
-                    System.out.println(String.format("%4dms spent in %s", System.currentTimeMillis() - startTime, manifestFile));
-
+                appManifest = createAppManifest(manifestFile, resDir, assetDir);
+                if (libraryDirs != null) {
+                    appManifest.setLibraryDirectories(libraryDirs);
+                }
                 envHolder.appManifestsByFile.put(manifestFile, appManifest);
             }
             return appManifest;
         }
     }
 
-    protected AndroidManifest createAppManifest(FsFile manifestFile) {
+    protected FsFile getBaseDir() {
+        return Fs.currentDirectory();
+    }
+
+    protected AndroidManifest createAppManifest(FsFile manifestFile, FsFile resDir, FsFile assetDir) {
         if (!manifestFile.exists()) {
             System.out.print("WARNING: No manifest file found at " + manifestFile.getPath() + ".");
             System.out.println("Falling back to the Android OS resources only.");
             System.out.println("To remove this warning, annotate your test class with @Config(manifest=Config.NONE).");
             return null;
         }
-
-        FsFile appBaseDir = manifestFile.getParent();
-        return new AndroidManifest(manifestFile, appBaseDir.join("res"), appBaseDir.join("assets"));
+        AndroidManifest manifest = new AndroidManifest(manifestFile, resDir, assetDir);
+        manifest.setPackageName(System.getProperty("android.package"));
+        return manifest;
     }
 
     protected AndroidManifest createAppManifestFromProperty(FsFile manifestFile) {
@@ -243,7 +286,8 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
         lastTestRunnerClass = null;
         lastSdkConfig = null;
         lastSdkEnvironment = envHolder.getSdkEnvironment(sdkConfig, new SdkEnvironment.Factory() {
-            @Override public SdkEnvironment create() {
+            @Override
+            public SdkEnvironment create() {
                 return createSdkEnvironment(sdkConfig);
             }
         });
@@ -253,51 +297,48 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
     }
 
     public SdkEnvironment createSdkEnvironment(SdkConfig sdkConfig) {
-        Setup setup = createSetup();
-        ClassLoader robolectricClassLoader = createRobolectricClassLoader(setup, sdkConfig);
+        InstrumentingClassLoaderConfig config = createSetup();
+        ClassLoader robolectricClassLoader = createRobolectricClassLoader(config, sdkConfig);
         return new SdkEnvironment(sdkConfig, robolectricClassLoader);
     }
 
-    protected ClassLoader createRobolectricClassLoader(Setup setup, SdkConfig sdkConfig) {
-        URL[] urls = MAVEN_CENTRAL.getLocalArtifactUrls(
-                null,
-                sdkConfig.getSdkClasspathDependencies());
-
-        return new AsmInstrumentingClassLoader(setup, urls);
+    protected ClassLoader createRobolectricClassLoader(InstrumentingClassLoaderConfig config, SdkConfig sdkConfig) {
+        URL[] urls = getJarResolver().getLocalArtifactUrls(sdkConfig.getSdkClasspathDependencies());
+        return new InstrumentingClassLoader(config, urls);
     }
 
-    public Setup createSetup() {
-        return new Setup() {
-            @Override
-            public boolean shouldAcquire(String name) {
+    protected DependencyResolver getJarResolver() {
+        if (dependencyResolver == null) {
+            if (Boolean.getBoolean("robolectric.offline")) {
+                String dependencyDir = System.getProperty("robolectric.dependency.dir", ".");
+                dependencyResolver = new LocalDependencyResolver(new File(dependencyDir));
+            } else {
+                File cacheDir = new File(new File(System.getProperty("java.io.tmpdir")), "robolectric");
+                cacheDir.mkdir();
 
-                List<String> prefixes = Arrays.asList(
-                        MavenCentral.class.getName(),
-                        "org.junit",
-                        ShadowMap.class.getName()
-                );
-
-                if(name != null) {
-                    for(String prefix : prefixes) {
-                        if (name.startsWith(prefix)) {
-                            return false;
-                        }
-                    }
+                if (cacheDir.exists()) {
+                    dependencyResolver = new CachedDependencyResolver(new MavenDependencyResolver(), cacheDir, 60 * 60 * 24 * 1000);
+                } else {
+                    dependencyResolver = new MavenDependencyResolver();
                 }
-
-                return super.shouldAcquire(name);
             }
-        };
+        }
+
+        return dependencyResolver;
     }
 
-    protected SdkConfig pickSdkVersion(AndroidManifest appManifest, Config config) {
+    public InstrumentingClassLoaderConfig createSetup() {
+        return new InstrumentingClassLoaderConfig();
+    }
+
+    private SdkConfig pickSdkVersion(AndroidManifest appManifest, Config config) {
         if (config != null && config.emulateSdk() > 0) {
             return new SdkConfig(config.emulateSdk());
         } else {
             if (appManifest != null) {
                 return new SdkConfig(appManifest.getTargetSdkVersion());
             } else {
-                return SdkConfig.getDefaultSdk();
+                return new SdkConfig(SdkConfig.FALLBACK_SDK_VERSION);
             }
         }
     }
