@@ -6,7 +6,9 @@ allprojects {
     repositories {
         maven {
             url googleLocalRepo
+
         }
+        maven { url "https://oss.sonatype.org/content/repositories/snapshots" }
 
         mavenCentral()
     }
