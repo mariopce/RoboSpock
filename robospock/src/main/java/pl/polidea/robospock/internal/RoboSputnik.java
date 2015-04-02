@@ -90,7 +90,7 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
         // let's manually add our initializers
 
         for (Method method : sputnik.getClass().getDeclaredMethods()) {
-            if (method.getName() == "getSpec") {
+            if ("getSpec".equals(method.getName())) {
                 method.setAccessible(true);
                 try {
                     Object spec = method.invoke(sputnik);

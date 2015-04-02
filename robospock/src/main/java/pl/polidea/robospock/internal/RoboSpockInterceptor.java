@@ -4,27 +4,34 @@ import android.app.Application;
 import android.os.Build;
 import org.robolectric.*;
 import org.robolectric.annotation.*;
-import org.robolectric.bytecode.ClassHandler;
-import org.robolectric.bytecode.RobolectricInternals;
-import org.robolectric.bytecode.ShadowMap;
-import org.robolectric.bytecode.ShadowWrangler;
 import org.robolectric.internal.ParallelUniverseInterface;
+import org.robolectric.internal.SdkConfig;
+import org.robolectric.internal.SdkEnvironment;
+import org.robolectric.internal.bytecode.ClassHandler;
+import org.robolectric.internal.bytecode.RobolectricInternals;
+import org.robolectric.internal.bytecode.ShadowMap;
+import org.robolectric.internal.bytecode.ShadowWrangler;
+import org.robolectric.internal.dependency.CachedDependencyResolver;
+import org.robolectric.internal.dependency.DependencyResolver;
+import org.robolectric.internal.dependency.LocalDependencyResolver;
+import org.robolectric.internal.dependency.MavenDependencyResolver;
+import org.robolectric.manifest.AndroidManifest;
 import org.robolectric.res.ResourceLoader;
+import org.robolectric.util.ReflectionHelpers;
 import org.spockframework.runtime.extension.AbstractMethodInterceptor;
 import org.spockframework.runtime.extension.IMethodInvocation;
 import org.spockframework.runtime.model.SpecInfo;
 
+import java.io.File;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 
-import static org.fest.reflect.core.Reflection.staticField;
 
 public class RoboSpockInterceptor extends AbstractMethodInterceptor {
-
-    private static final MavenCentral MAVEN_CENTRAL = new MavenCentral();
 
     private static ShadowMap mainShadowMap;
     private TestLifecycle<Application> testLifecycle;
@@ -33,6 +40,7 @@ public class RoboSpockInterceptor extends AbstractMethodInterceptor {
     private final SdkEnvironment sdkEnvironment;
     private final Config config;
     private final AndroidManifest appManifest;
+    private DependencyResolver dependencyResolver;
 
     public RoboSpockInterceptor(
             SpecInfo specInfo, SdkEnvironment sdkEnvironment, Config config, AndroidManifest appManifest) {
@@ -54,78 +62,29 @@ public class RoboSpockInterceptor extends AbstractMethodInterceptor {
         try {
             assureTestLifecycle(sdkEnvironment);
 
-            parallelUniverseInterface.resetStaticState();
+            parallelUniverseInterface.resetStaticState(config);
             parallelUniverseInterface.setSdkConfig(sdkEnvironment.getSdkConfig());
 
-            boolean strictI18n = determineI18nStrictState();
-
             int sdkVersion = pickReportedSdkVersion(config, appManifest);
-            Class<?> versionClass = sdkEnvironment.bootstrappedClass(Build.VERSION.class);
-            staticField("SDK_INT").ofType(int.class).in(versionClass).set(sdkVersion);
+            ReflectionHelpers.setStaticField(sdkEnvironment.bootstrappedClass(Build.VERSION.class), "SDK_INT", sdkVersion);
 
-            ResourceLoader systemResourceLoader = sdkEnvironment.getSystemResourceLoader(MAVEN_CENTRAL, null);
-            setUpApplicationState(null, parallelUniverseInterface, strictI18n, systemResourceLoader, appManifest, config);
+            ResourceLoader systemResourceLoader = sdkEnvironment.getSystemResourceLoader(getJarResolver());
+            setUpApplicationState(null, parallelUniverseInterface, systemResourceLoader, appManifest, config);
         } catch (Exception e) {
             e.printStackTrace();
             throw new RuntimeException(e);
         }
 
-
-        Map<Field, Object> withConstantAnnos = getWithConstantAnnotations();
-
-        setupConstants(withConstantAnnos);
-
         try {
             invocation.proceed();
         } finally {
-            parallelUniverseInterface.resetStaticState();
+            parallelUniverseInterface.resetStaticState(config);
         }
 
     }
 
-    private void setupConstants(Map<Field, Object> constants) {
-        for (Field field : constants.keySet()) {
-            Object newValue = constants.get(field);
-            Object oldValue = Robolectric.Reflection.setFinalStaticField(field, newValue);
-            constants.put(field, oldValue);
-        }
-    }
-
-    private Map<Field, Object> getWithConstantAnnotations() {
-        Map<Field, Object> constants = new HashMap<Field, Object>();
-
-        for (Annotation anno : specInfo.getReflection().getAnnotations()) {
-            addConstantFromAnnotation(constants, anno);
-        }
-
-        return constants;
-    }
-
-    private void addConstantFromAnnotation(Map<Field, Object> constants, Annotation anno) {
-        try {
-            String name = anno.annotationType().getName();
-            Object newValue = null;
-
-            if (name.equals(WithConstantString.class.getName())) {
-                newValue = anno.annotationType().getMethod("newValue").invoke(anno);
-            } else if (name.equals(WithConstantInt.class.getName())) {
-                newValue = anno.annotationType().getMethod("newValue").invoke(anno);
-            } else {
-                return;
-            }
-
-            @SuppressWarnings("rawtypes")
-            Class classWithField = (Class) anno.annotationType().getMethod("classWithField").invoke(anno);
-            String fieldName = (String) anno.annotationType().getMethod("fieldName").invoke(anno);
-            Field field = classWithField.getDeclaredField(fieldName);
-            constants.put(field, newValue);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    protected void setUpApplicationState(Method method, ParallelUniverseInterface parallelUniverseInterface, boolean strictI18n, ResourceLoader systemResourceLoader, AndroidManifest appManifest, Config config) {
-        parallelUniverseInterface.setUpApplicationState(method, testLifecycle, strictI18n, systemResourceLoader, appManifest, config);
+    protected void setUpApplicationState(Method method, ParallelUniverseInterface parallelUniverseInterface, ResourceLoader systemResourceLoader, AndroidManifest appManifest, Config config) {
+        parallelUniverseInterface.setUpApplicationState(method, testLifecycle, systemResourceLoader, appManifest, config);
     }
 
     protected int pickReportedSdkVersion(Config config, AndroidManifest appManifest) {
@@ -212,9 +171,8 @@ public class RoboSpockInterceptor extends AbstractMethodInterceptor {
     }
 
     protected ShadowMap createShadowMap() {
-        synchronized (RobolectricTestRunner.class) {
+        synchronized (RoboSpockInterceptor.class) {
             if (mainShadowMap != null) return mainShadowMap;
-
             mainShadowMap = new ShadowMap.Builder().build();
             return mainShadowMap;
         }
@@ -227,7 +185,6 @@ public class RoboSpockInterceptor extends AbstractMethodInterceptor {
             if (classHandler == null) {
                 classHandler = createClassHandler(shadowMap, sdkEnvironment.getSdkConfig());
             }
-            sdkEnvironment.setCurrentClassHandler(classHandler);
         }
         return classHandler;
     }
@@ -236,22 +193,23 @@ public class RoboSpockInterceptor extends AbstractMethodInterceptor {
         return new ShadowWrangler(shadowMap, sdkConfig);
     }
 
-    private boolean determineI18nStrictState() {
-        // Global
-        boolean strictI18n = globalI18nStrictEnabled();
+    protected DependencyResolver getJarResolver() {
+        if (dependencyResolver == null) {
+            if (Boolean.getBoolean("robolectric.offline")) {
+                String dependencyDir = System.getProperty("robolectric.dependency.dir", ".");
+                dependencyResolver = new LocalDependencyResolver(new File(dependencyDir));
+            } else {
+                File cacheDir = new File(new File(System.getProperty("java.io.tmpdir")), "robolectric");
+                cacheDir.mkdir();
 
-        // Test case class
-        Class<?> testClass = specInfo.getReflection();
-        if (testClass.getAnnotation(EnableStrictI18n.class) != null) {
-            strictI18n = true;
-        } else if (testClass.getAnnotation(DisableStrictI18n.class) != null) {
-            strictI18n = false;
+                if (cacheDir.exists()) {
+                    dependencyResolver = new CachedDependencyResolver(new MavenDependencyResolver(), cacheDir, 60 * 60 * 24 * 1000);
+                } else {
+                    dependencyResolver = new MavenDependencyResolver();
+                }
+            }
         }
 
-        return strictI18n;
-    }
-
-    private boolean globalI18nStrictEnabled() {
-        return Boolean.valueOf(System.getProperty("robolectric.strictI18n"));
+        return dependencyResolver;
     }
 }
