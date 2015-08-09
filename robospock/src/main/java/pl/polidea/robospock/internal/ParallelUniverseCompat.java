@@ -1,7 +1,6 @@
 package pl.polidea.robospock.internal;
 
 import android.app.Application;
-import android.app.Instrumentation;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
@@ -33,7 +32,6 @@ import java.util.List;
 import java.util.Map;
 
 public class ParallelUniverseCompat implements ParallelUniverseInterface {
-
     private static final String DEFAULT_PACKAGE_NAME = "org.robolectric.default";
     private final ShadowsAdapter shadowsAdapter = Robolectric.getShadowsAdapter();
     private static Map<Pair<AndroidManifest, SdkConfig>, ResourceLoader> resourceLoadersByManifestAndConfig = new HashMap<Pair<AndroidManifest, SdkConfig>, ResourceLoader>();
@@ -44,7 +42,7 @@ public class ParallelUniverseCompat implements ParallelUniverseInterface {
 
     @Override
     public void resetStaticState(Config config) {
-//        Robolectric.reset();
+        Robolectric.reset();
 
         if (!loggingInitialized) {
             ShadowLog.setupLogging();
@@ -74,6 +72,8 @@ public class ParallelUniverseCompat implements ParallelUniverseInterface {
         RuntimeEnvironment.getRobolectricPackageManager().addPackage(DEFAULT_PACKAGE_NAME);
         ResourceLoader resourceLoader;
         if (appManifest != null) {
+            // robolectric
+            // resourceLoader = robolectricTestRunner.getAppResourceLoader(sdkConfig, systemResourceLoader, appManifest);
             resourceLoader = getAppResourceLoader(sdkConfig, systemResourceLoader, appManifest);
             RuntimeEnvironment.getRobolectricPackageManager().addManifest(appManifest, resourceLoader);
         } else {

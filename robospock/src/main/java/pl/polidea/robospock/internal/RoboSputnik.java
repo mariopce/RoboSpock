@@ -33,6 +33,19 @@ import java.util.*;
 public class RoboSputnik extends Runner implements Filterable, Sortable {
 
 
+    protected DependencyResolver getJarResolver() {
+        if (dependencyResolver == null) {
+            if (Boolean.getBoolean("robolectric.offline")) {
+                String dependencyDir = System.getProperty("robolectric.dependency.dir", ".");
+                dependencyResolver = new LocalDependencyResolver(new File(dependencyDir));
+            } else {
+                dependencyResolver = new MavenDependencyResolver();
+            }
+        }
+
+        return dependencyResolver;
+    }
+
 
     private static final Map<AndroidManifest, ResourceLoader> resourceLoadersByAppManifest = new HashMap<AndroidManifest, ResourceLoader>();
 
@@ -76,7 +89,7 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
         // let's manually add our initializers
 
         for (Method method : sputnik.getClass().getDeclaredMethods()) {
-            if ("getSpec".equals(method.getName())) {
+            if(method.getName().equals("getSpec")) {
                 method.setAccessible(true);
                 try {
                     Object spec = method.invoke(sputnik);
@@ -357,27 +370,6 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
         URL[] urls = getJarResolver().getLocalArtifactUrls(sdkConfig.getSdkClasspathDependencies());
         return new InstrumentingClassLoader(config, urls);
     }
-
-    protected DependencyResolver getJarResolver() {
-        if (dependencyResolver == null) {
-            if (Boolean.getBoolean("robolectric.offline")) {
-                String dependencyDir = System.getProperty("robolectric.dependency.dir", ".");
-                dependencyResolver = new LocalDependencyResolver(new File(dependencyDir));
-            } else {
-                File cacheDir = new File(new File(System.getProperty("java.io.tmpdir")), "robolectric");
-                cacheDir.mkdir();
-
-                if (cacheDir.exists()) {
-                    dependencyResolver = new CachedDependencyResolver(new MavenDependencyResolver(), cacheDir, 60 * 60 * 24 * 1000);
-                } else {
-                    dependencyResolver = new MavenDependencyResolver();
-                }
-            }
-        }
-
-        return dependencyResolver;
-    }
-
 
     private SdkConfig pickSdkVersion(AndroidManifest appManifest, Config config) {
         if (config != null && config.sdk().length > 1) {

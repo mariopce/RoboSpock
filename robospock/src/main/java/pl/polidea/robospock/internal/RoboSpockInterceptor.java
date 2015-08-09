@@ -30,9 +30,21 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 
-
 public class RoboSpockInterceptor extends AbstractMethodInterceptor {
+    private DependencyResolver dependencyResolver;
 
+    protected DependencyResolver getJarResolver() {
+        if (dependencyResolver == null) {
+            if (Boolean.getBoolean("robolectric.offline")) {
+                String dependencyDir = System.getProperty("robolectric.dependency.dir", ".");
+                dependencyResolver = new LocalDependencyResolver(new File(dependencyDir));
+            } else {
+                dependencyResolver = new MavenDependencyResolver();
+            }
+        }
+
+        return dependencyResolver;
+    }
     private static ShadowMap mainShadowMap;
     private TestLifecycle<Application> testLifecycle;
 
@@ -40,7 +52,7 @@ public class RoboSpockInterceptor extends AbstractMethodInterceptor {
     private final SdkEnvironment sdkEnvironment;
     private final Config config;
     private final AndroidManifest appManifest;
-    private DependencyResolver dependencyResolver;
+
 
     public RoboSpockInterceptor(
             SpecInfo specInfo, SdkEnvironment sdkEnvironment, Config config, AndroidManifest appManifest) {
@@ -64,16 +76,20 @@ public class RoboSpockInterceptor extends AbstractMethodInterceptor {
 
             parallelUniverseInterface.resetStaticState(config);
             parallelUniverseInterface.setSdkConfig(sdkEnvironment.getSdkConfig());
-
+            boolean strictI18n = determineI18nStrictState();
             int sdkVersion = pickReportedSdkVersion(config, appManifest);
-            ReflectionHelpers.setStaticField(sdkEnvironment.bootstrappedClass(Build.VERSION.class), "SDK_INT", sdkVersion);
+            Class<?> versionClass = sdkEnvironment.bootstrappedClass(Build.VERSION.class);
+            ReflectionHelpers.setStaticField(versionClass, "SDK_INT", sdkVersion);
 
             ResourceLoader systemResourceLoader = sdkEnvironment.getSystemResourceLoader(getJarResolver());
-            setUpApplicationState(null, parallelUniverseInterface, systemResourceLoader, appManifest, config);
+            setUpApplicationState(null, parallelUniverseInterface, strictI18n, systemResourceLoader, appManifest, config);
         } catch (Exception e) {
             e.printStackTrace();
             throw new RuntimeException(e);
         }
+
+
+
 
         try {
             invocation.proceed();
@@ -83,7 +99,9 @@ public class RoboSpockInterceptor extends AbstractMethodInterceptor {
 
     }
 
-    protected void setUpApplicationState(Method method, ParallelUniverseInterface parallelUniverseInterface, ResourceLoader systemResourceLoader, AndroidManifest appManifest, Config config) {
+
+
+    protected void setUpApplicationState(Method method, ParallelUniverseInterface parallelUniverseInterface, boolean strictI18n, ResourceLoader systemResourceLoader, AndroidManifest appManifest, Config config) {
         parallelUniverseInterface.setUpApplicationState(method, testLifecycle, systemResourceLoader, appManifest, config);
     }
 
@@ -171,8 +189,9 @@ public class RoboSpockInterceptor extends AbstractMethodInterceptor {
     }
 
     protected ShadowMap createShadowMap() {
-        synchronized (RoboSpockInterceptor.class) {
+        synchronized (RobolectricTestRunner.class) {
             if (mainShadowMap != null) return mainShadowMap;
+
             mainShadowMap = new ShadowMap.Builder().build();
             return mainShadowMap;
         }
@@ -193,23 +212,15 @@ public class RoboSpockInterceptor extends AbstractMethodInterceptor {
         return new ShadowWrangler(shadowMap);
     }
 
-    protected DependencyResolver getJarResolver() {
-        if (dependencyResolver == null) {
-            if (Boolean.getBoolean("robolectric.offline")) {
-                String dependencyDir = System.getProperty("robolectric.dependency.dir", ".");
-                dependencyResolver = new LocalDependencyResolver(new File(dependencyDir));
-            } else {
-                File cacheDir = new File(new File(System.getProperty("java.io.tmpdir")), "robolectric");
-                cacheDir.mkdir();
+    private boolean determineI18nStrictState() {
+        // Global
+        boolean strictI18n = globalI18nStrictEnabled();
 
-                if (cacheDir.exists()) {
-                    dependencyResolver = new CachedDependencyResolver(new MavenDependencyResolver(), cacheDir, 60 * 60 * 24 * 1000);
-                } else {
-                    dependencyResolver = new MavenDependencyResolver();
-                }
-            }
-        }
 
-        return dependencyResolver;
+        return strictI18n;
+    }
+
+    private boolean globalI18nStrictEnabled() {
+        return Boolean.valueOf(System.getProperty("robolectric.strictI18n"));
     }
 }

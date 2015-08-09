@@ -1,3 +1,9 @@
+repositories {
+    flatDir {
+        dirs 'libs'
+    }
+}
+
 apply {
     plugin 'groovy'
     plugin 'signing'
@@ -19,20 +25,9 @@ dependencies {
     // Android part
     compile "org.robolectric:robolectric:3.0"
     compile "com.google.android:android:4.1.1.4"
-
+    compile "com.android.support:support-v4:19.0.1"
 }
 
-test {
-    //workingDir project(':antApp').file('.')
-}
-
-clean {
-    delete 'tmp'
-}
-
-task wrapper(type: Wrapper) {
-    gradleVersion = '2.5'
-}
 
 /*
  *
@@ -117,6 +112,17 @@ uploadArchives {
                     name 'Wojtek Erbetowski'
                 }
             }
+        }
+    }
+}
+
+test {
+    testLogging {
+        events "passed", "skipped", "failed"
+        //, "standardOut", "standardError"
+
+        lifecycle {
+            exceptionFormat "full"
         }
     }
 }
