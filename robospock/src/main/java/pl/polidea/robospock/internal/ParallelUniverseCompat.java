@@ -57,7 +57,7 @@ public class ParallelUniverseCompat implements ParallelUniverseInterface {
      * qualifier for the target api level (which comes from the manifest or Config.emulateSdk()).
      */
     private String addVersionQualifierToQualifiers(String qualifiers) {
-        int versionQualifierApiLevel = ResBunch.getVersionQualifierApiLevel(qualifiers);
+        int versionQualifierApiLevel = ResBundle.getVersionQualifierApiLevel(qualifiers);
         if (versionQualifierApiLevel == -1) {
             if (qualifiers.length() > 0) {
                 qualifiers += "-";

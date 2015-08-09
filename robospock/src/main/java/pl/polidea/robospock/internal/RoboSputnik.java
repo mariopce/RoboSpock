@@ -6,11 +6,10 @@ import org.junit.runner.manipulation.*;
 import org.junit.runner.notification.RunNotifier;
 import org.junit.runners.model.InitializationError;
 import org.robolectric.annotation.Config;
-import org.robolectric.internal.EnvHolder;
 import org.robolectric.internal.SdkConfig;
 import org.robolectric.internal.SdkEnvironment;
+import org.robolectric.internal.bytecode.InstrumentationConfiguration;
 import org.robolectric.internal.bytecode.InstrumentingClassLoader;
-import org.robolectric.internal.bytecode.InstrumentingClassLoaderConfig;
 import org.robolectric.internal.dependency.CachedDependencyResolver;
 import org.robolectric.internal.dependency.DependencyResolver;
 import org.robolectric.internal.dependency.LocalDependencyResolver;
@@ -34,16 +33,14 @@ import java.util.*;
 public class RoboSputnik extends Runner implements Filterable, Sortable {
 
 
-    private static final Map<Class<? extends RoboSputnik>, EnvHolder> envHoldersByTestRunner =
-            new HashMap<Class<? extends RoboSputnik>, EnvHolder>();
 
     private static final Map<AndroidManifest, ResourceLoader> resourceLoadersByAppManifest = new HashMap<AndroidManifest, ResourceLoader>();
 
     private static Class<? extends RoboSputnik> lastTestRunnerClass;
     private static SdkConfig lastSdkConfig;
+    private static final Map<ManifestIdentifier, AndroidManifest> appManifestsByFile = new HashMap<ManifestIdentifier, AndroidManifest>();
     private static SdkEnvironment lastSdkEnvironment;
 
-    private final EnvHolder envHolder;
 
     private Object sputnik;
 
@@ -56,17 +53,6 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
     public RoboSputnik(Class<?> clazz) throws InitializationError {
 
         // Ripped from RobolectricTestRunner
-
-        EnvHolder envHolder;
-        synchronized (envHoldersByTestRunner) {
-            Class<? extends RoboSputnik> testRunnerClass = getClass();
-            envHolder = envHoldersByTestRunner.get(testRunnerClass);
-            if (envHolder == null) {
-                envHolder = new EnvHolder();
-                envHoldersByTestRunner.put(testRunnerClass, envHolder);
-            }
-        }
-        this.envHolder = envHolder;
 
         final Config config = getConfig(clazz);
         AndroidManifest appManifest = getAppManifest(config);
@@ -166,6 +152,7 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
         String manifestProperty = System.getProperty("android.manifest");
         String resourcesProperty = System.getProperty("android.resources");
         String assetsProperty = System.getProperty("android.assets");
+        String packageName = System.getProperty("android.package");
 
         FsFile baseDir;
         FsFile manifestFile;
@@ -195,6 +182,11 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
             assetDir = baseDir.join(config.assetDir());
         }
 
+        String configPackageName = config.packageName();
+        if (configPackageName != null && !configPackageName.isEmpty()) {
+            packageName = configPackageName;
+        }
+
         List<FsFile> libraryDirs = null;
         if (config.libraries().length > 0) {
             libraryDirs = new ArrayList<FsFile>();
@@ -203,17 +195,79 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
             }
         }
 
-        synchronized (envHolder) {
+
+        ManifestIdentifier identifier = new ManifestIdentifier(manifestFile, resDir, assetDir, packageName, libraryDirs);
+        synchronized (appManifestsByFile) {
             AndroidManifest appManifest;
-            appManifest = envHolder.appManifestsByFile.get(manifestFile);
+            appManifest = appManifestsByFile.get(identifier);
             if (appManifest == null) {
-                appManifest = createAppManifest(manifestFile, resDir, assetDir);
+                appManifest = createAppManifest(manifestFile, resDir, assetDir, packageName);
                 if (libraryDirs != null) {
                     appManifest.setLibraryDirectories(libraryDirs);
                 }
-                envHolder.appManifestsByFile.put(manifestFile, appManifest);
+                appManifestsByFile.put(identifier, appManifest);
             }
             return appManifest;
+        }
+    }
+
+    protected AndroidManifest createAppManifest(FsFile manifestFile, FsFile resDir, FsFile assetDir, String packageName) {
+        if (!manifestFile.exists()) {
+            System.out.print("WARNING: No manifest file found at " + manifestFile.getPath() + ".");
+            System.out.println("Falling back to the Android OS resources only.");
+            System.out.println("To remove this warning, annotate your test class with @Config(manifest=Config.NONE).");
+            return null;
+        }
+
+        System.out.println("Robolectric assets directory: " + assetDir.getPath());
+        System.out.println("   Robolectric res directory: " + resDir.getPath());
+        System.out.println("   Robolectric manifest path: " + manifestFile.getPath());
+        System.out.println("    Robolectric package name: " + packageName);
+        return new AndroidManifest(manifestFile, resDir, assetDir, packageName);
+    }
+
+    public InstrumentationConfiguration createClassLoaderConfig() {
+        return InstrumentationConfiguration.newBuilder().build();
+    }
+
+    private static class ManifestIdentifier {
+        private final FsFile manifestFile;
+        private final FsFile resDir;
+        private final FsFile assetDir;
+        private final String packageName;
+        private final List<FsFile> libraryDirs;
+
+        public ManifestIdentifier(FsFile manifestFile, FsFile resDir, FsFile assetDir, String packageName,
+                                  List<FsFile> libraryDirs) {
+            this.manifestFile = manifestFile;
+            this.resDir = resDir;
+            this.assetDir = assetDir;
+            this.packageName = packageName;
+            this.libraryDirs = libraryDirs != null ? libraryDirs : Collections.<FsFile>emptyList();
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+
+            ManifestIdentifier that = (ManifestIdentifier) o;
+
+            return assetDir.equals(that.assetDir)
+                    && libraryDirs.equals(that.libraryDirs)
+                    && manifestFile.equals(that.manifestFile)
+                    && resDir.equals(that.resDir)
+                    && ((packageName == null && that.packageName == null) || (packageName != null && packageName.equals(that.packageName)));
+        }
+
+        @Override
+        public int hashCode() {
+            int result = manifestFile.hashCode();
+            result = 31 * result + resDir.hashCode();
+            result = 31 * result + assetDir.hashCode();
+            result = 31 * result + (packageName == null ? 0 : packageName.hashCode());
+            result = 31 * result + libraryDirs.hashCode();
+            return result;
         }
     }
 
@@ -285,24 +339,21 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
 
         lastTestRunnerClass = null;
         lastSdkConfig = null;
-        lastSdkEnvironment = envHolder.getSdkEnvironment(sdkConfig, new SdkEnvironment.Factory() {
-            @Override
-            public SdkEnvironment create() {
-                return createSdkEnvironment(sdkConfig);
-            }
-        });
+
+        lastSdkEnvironment = createSdkEnvironment(sdkConfig);
         lastTestRunnerClass = getClass();
         lastSdkConfig = sdkConfig;
         return lastSdkEnvironment;
     }
 
     public SdkEnvironment createSdkEnvironment(SdkConfig sdkConfig) {
-        InstrumentingClassLoaderConfig config = createSetup();
+        System.out.println("createSdkEnvironment for " +sdkConfig);
+        InstrumentationConfiguration config = createClassLoaderConfig();
         ClassLoader robolectricClassLoader = createRobolectricClassLoader(config, sdkConfig);
         return new SdkEnvironment(sdkConfig, robolectricClassLoader);
     }
 
-    protected ClassLoader createRobolectricClassLoader(InstrumentingClassLoaderConfig config, SdkConfig sdkConfig) {
+    protected ClassLoader createRobolectricClassLoader(InstrumentationConfiguration config, SdkConfig sdkConfig) {
         URL[] urls = getJarResolver().getLocalArtifactUrls(sdkConfig.getSdkClasspathDependencies());
         return new InstrumentingClassLoader(config, urls);
     }
@@ -327,19 +378,16 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
         return dependencyResolver;
     }
 
-    public InstrumentingClassLoaderConfig createSetup() {
-        return new InstrumentingClassLoaderConfig();
-    }
 
     private SdkConfig pickSdkVersion(AndroidManifest appManifest, Config config) {
-        if (config != null && config.emulateSdk() > 0) {
-            return new SdkConfig(config.emulateSdk());
+        if (config != null && config.sdk().length > 1) {
+            throw new IllegalArgumentException("RobolectricTestRunner does not support multiple values for @Config.sdk");
+        } else if (config != null && config.sdk().length == 1) {
+            return new SdkConfig(config.sdk()[0]);
+        } else if (appManifest != null) {
+            return new SdkConfig(appManifest.getTargetSdkVersion());
         } else {
-            if (appManifest != null) {
-                return new SdkConfig(appManifest.getTargetSdkVersion());
-            } else {
-                return new SdkConfig(SdkConfig.FALLBACK_SDK_VERSION);
-            }
+            return new SdkConfig(SdkConfig.FALLBACK_SDK_VERSION);
         }
     }
 

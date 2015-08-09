@@ -88,8 +88,8 @@ public class RoboSpockInterceptor extends AbstractMethodInterceptor {
     }
 
     protected int pickReportedSdkVersion(Config config, AndroidManifest appManifest) {
-        if (config != null && config.reportSdk() != -1) {
-            return config.reportSdk();
+        if (config != null && config.sdk().length>0 && config.sdk()[0] != -1) {
+            return config.sdk()[0];
         } else {
             return getTargetSdkVersion(appManifest);
         }
@@ -190,7 +190,7 @@ public class RoboSpockInterceptor extends AbstractMethodInterceptor {
     }
 
     protected ClassHandler createClassHandler(ShadowMap shadowMap, SdkConfig sdkConfig) {
-        return new ShadowWrangler(shadowMap, sdkConfig);
+        return new ShadowWrangler(shadowMap);
     }
 
     protected DependencyResolver getJarResolver() {
